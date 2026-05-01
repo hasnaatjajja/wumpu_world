@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Wumpus World AI</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e2f; color: #fff; margin: 0; padding: 30px; display: flex; justify-content: center; gap: 40px; }
+        .sidebar { background: #2a2a40; padding: 20px; border-radius: 12px; width: 320px; box-shadow: 0 8px 16px rgba(0,0,0,0.5); }
+        h1 { font-size: 24px; margin-top: 0; color: #4CAF50; border-bottom: 2px solid #3f3f5a; padding-bottom: 10px; }
+        .control-group { margin-bottom: 20px; }
+        label { font-size: 14px; color: #aaa; }
+        input { width: 50px; padding: 5px; background: #1e1e2f; color: #fff; border: 1px solid #3f3f5a; border-radius: 4px; }
+        button { background: #4CAF50; border: none; padding: 12px 15px; color: white; border-radius: 6px; cursor: pointer; font-weight: bold; width: 100%; margin-bottom: 8px; transition: 0.2s;}
+        button:hover { background: #45a049; }
+        button.ai-btn { background: #00bcd4; font-size: 16px; }
+        button.ai-btn:hover { background: #008ba3; }
+        button.god-mode { background: #ff9800; }
+        button.god-mode:hover { background: #f57c00; }
+        
+        .grid-container { display: grid; gap: 4px; background: #2a2a40; padding: 15px; border-radius: 12px; box-shadow: 0 8px 16px rgba(0,0,0,0.5); }
+        .cell { width: 80px; height: 80px; background: #3f3f5a; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 36px; position: relative; transition: 0.2s; }
+        .cell.visited { background: #e0e0e0; }
+        .cell.safe { border: 3px solid #4CAF50; }
+        
+        .percepts-box { background: #1e1e2f; padding: 15px; border-radius: 8px; font-size: 14px; margin-top: 15px; border-left: 4px solid #00bcd4; }
+        .controls-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; text-align: center; margin-top: 20px; }
+        .controls-grid button { width: auto; background: #5c5c7a; }
+        .controls-grid button:hover { background: #767699; }
+        
+        .agent { position: absolute; font-size: 45px; z-index: 10; animation: pop 0.3s ease; }
+        @keyframes pop { 0% { transform: scale(0.5); } 100% { transform: scale(1); } }
+        
+        .hidden-entity { opacity: 0; transition: opacity 0.3s; }
+        .god-mode-active .hidden-entity { opacity: 0.5 !important; }
+        .visited .hidden-entity { opacity: 1 !important; }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <h1>Wumpus Knowledge Agent</h1>
+        
+        <div class="control-group">
+            <label>Grid Size: <input type="number" id="gridSize" value="5" min="3" max="10"></label>
+            <button onclick="apiCreateGrid()" style="margin-top: 10px;">🔄 Generate New World</button>
+            <button onclick="toggleGodMode()" class="god-mode" id="godBtn">👁️ Toggle God Mode</button>
+        </div>
+
+        <button onclick="toggleAutoMove()" class="ai-btn" id="aiBtn">🤖 Start AI Auto-Move</button>
+
+        <div class="percepts-box">
+            <strong>🧠 Inference Steps:</strong> <span id="steps">0</span><br><br>
+            <strong>📡 Current Percepts:</strong> <br><span id="percepts" style="color: #ffb74d;">None</span>
+        </div>
+
+        <div class="controls-grid">
+            <div></div>
+            <button onclick="apiMove('up')">⬆️</button>
+            <div></div>
+            <button onclick="apiMove('left')">⬅️</button>
+            <button onclick="apiMove('down')">⬇️</button>
+            <button onclick="apiMove('right')">➡️</button>
+        </div>
+    </div>
+
+    <div class="grid-container" id="gridUI"></div>
+
+    <script>
+        let gridSize = 5;
+        let backendGrid = null;
+        let agentPos = {row: 0, col: 0};
+        let safeCells = [];
+        let visitedCells = [];
+        let currentPercepts = "";
+        let autoMoveInterval = null;
+        let isGameOver = false;
+
+        async function apiCreateGrid() {
+            gridSize = parseInt(document.getElementById('gridSize').value);
+            const res = await fetch('/create_grid', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ rows: gridSize, cols: gridSize })
+            });
+            const data = await res.json();
+            backendGrid = data.grid;
+            
+            agentPos = {row: 0, col: 0};
+            safeCells = [];
+            visitedCells = [{row: 0, col: 0}];
+            currentPercepts = "None";
+            isGameOver = false;
+            
+            document.getElementById('steps').textContent = "0";
+            document.getElementById('percepts').textContent = "None";
+            
+            if(autoMoveInterval) toggleAutoMove();
+            buildGridUI();
+        }
+
+        async function apiMove(action) {
+            if (isGameOver) return;
+
+            const res = await fetch('/move', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action })
+            });
+            
+            if (res.ok) {
+                const data = await res.json();
+                agentPos = data.agent_pos;
+                safeCells = data.safe_cells || [];
+                visitedCells = data.visited_cells;
+                currentPercepts = data.current_percepts;
+                
+                document.getElementById('steps').textContent = data.inference_steps;
+                document.getElementById('percepts').textContent = data.current_percepts;
+                buildGridUI();
+
+                if (data.game_over) {
+                    isGameOver = true;
+                    if(autoMoveInterval) toggleAutoMove();
+                    
+                    if (data.victory) {
+                        setTimeout(() => alert("💎 " + data.death_reason), 100);
+                    } else {
+                        setTimeout(() => alert("💀 " + data.death_reason), 100);
+                    }
+                }
+            }
+        }
+
+        function toggleGodMode() {
+            document.getElementById('gridUI').classList.toggle('god-mode-active');
+        }
+
+        function toggleAutoMove() {
+            if (autoMoveInterval) {
+                clearInterval(autoMoveInterval);
+                autoMoveInterval = null;
+                document.getElementById('aiBtn').innerText = "🤖 Start AI Auto-Move";
+                document.getElementById('aiBtn').style.background = "#00bcd4";
+            } else {
+                if (isGameOver) {
+                    alert("Game is over! Generate a new world first.");
+                    return;
+                }
+                autoMoveInterval = setInterval(performAIMove, 400);
+                document.getElementById('aiBtn').innerText = "🛑 Stop AI Agent";
+                document.getElementById('aiBtn').style.background = "#f44336";
+            }
+        }
+
+        async function performAIMove() {
+            if (isGameOver) return;
+
+            const directions = [
+                { name: 'up', r: -1, c: 0 }, { name: 'down', r: 1, c: 0 },
+                { name: 'left', r: 0, c: -1 }, { name: 'right', r: 0, c: 1 }
+            ];
+
+            let safeUnvisited = [];
+            let validVisited = [];
+            let unvisitedRisks = [];
+
+            // Categorize all valid adjacent moves
+            for (let dir of directions) {
+                let nr = agentPos.row + dir.r;
+                let nc = agentPos.col + dir.c;
+
+                if (nr >= 0 && nr < gridSize && nc >= 0 && nc < gridSize) {
+                    let isVisited = visitedCells.some(cell => cell.row === nr && cell.col === nc);
+                    let isSafe = safeCells.some(cell => cell.row === nr && cell.col === nc);
+
+                    if (!isVisited && isSafe) {
+                        safeUnvisited.push(dir.name);
+                    } else if (isVisited) {
+                        validVisited.push(dir.name);
+                    } else {
+                        unvisitedRisks.push(dir.name);
+                    }
+                }
+            }
+
+            let chosenMove = null;
+
+            // AI Decision Priority
+            if (safeUnvisited.length > 0) {
+                // 1. Move to guaranteed safe unvisited cell
+                chosenMove = safeUnvisited[Math.floor(Math.random() * safeUnvisited.length)];
+            } else if (validVisited.length > 0) {
+                // 2. Backtrack through visited cells to find another path
+                chosenMove = validVisited[Math.floor(Math.random() * validVisited.length)];
+            } else if (unvisitedRisks.length > 0) {
+                // 3. Forced to take a risk (No other way to advance the game)
+                chosenMove = unvisitedRisks[Math.floor(Math.random() * unvisitedRisks.length)];
+            }
+
+            if (chosenMove) {
+                await apiMove(chosenMove);
+            } else {
+                toggleAutoMove();
+                alert("Agent is completely trapped and has no valid moves!");
+            }
+        }
+
+        function buildGridUI() {
+            const container = document.getElementById('gridUI');
+            container.style.gridTemplateColumns = `repeat(${gridSize}, 80px)`;
+            container.style.gridTemplateRows = `repeat(${gridSize}, 80px)`;
+            container.innerHTML = '';
+
+            for (let r = 0; r < gridSize; r++) {
+                for (let c = 0; c < gridSize; c++) {
+                    const cellDiv = document.createElement('div');
+                    cellDiv.className = 'cell';
+                    
+                    if (visitedCells.some(v => v.row === r && v.col === c)) cellDiv.classList.add('visited');
+                    if (safeCells.some(s => s.row === r && s.col === c)) cellDiv.classList.add('safe');
+
+                    let entityHtml = '';
+                    if (backendGrid.gold.row === r && backendGrid.gold.col === c) {
+                        entityHtml = `<span class="hidden-entity">💎</span>`;
+                    } else if (backendGrid.wumpus.row === r && backendGrid.wumpus.col === c) {
+                        entityHtml = `<span class="hidden-entity">👹</span>`;
+                    } else if (backendGrid.pits.some(p => p.row === r && p.col === c)) {
+                        entityHtml = `<span class="hidden-entity">🕳️</span>`;
+                    }
+                    cellDiv.innerHTML = entityHtml;
+
+                    if (agentPos.row === r && agentPos.col === c) {
+                        const agentSpan = document.createElement('span');
+                        agentSpan.className = 'agent';
+                        
+                        // Change icon if dead
+                        if (isGameOver && !currentPercepts.includes("Glitter")) {
+                            agentSpan.innerText = '💀';
+                        } else {
+                            agentSpan.innerText = '🕵️‍♂️';
+                        }
+                        cellDiv.appendChild(agentSpan);
+                    }
+
+                    container.appendChild(cellDiv);
+                }
+            }
+        }
+
+        apiCreateGrid();
+    </script>
+</body>
+</html>
